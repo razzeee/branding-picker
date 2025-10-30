@@ -42,8 +42,71 @@ try {
   Adw = null;
 }
 
+// Top-level safe rgb->hex helper used by analyzers. Ensures values are clamped
+// to [0,255] and always returns a 6-digit hex string like #rrggbb.
+function safeRgbToHex(rr: number, gg: number, bb: number) {
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v || 0)));
+  const r = clamp(rr);
+  const g = clamp(gg);
+  const b = clamp(bb);
+  const s = (x: number) => (x < 16 ? '0' + x.toString(16) : x.toString(16));
+  return '#' + s(r) + s(g) + s(b);
+}
+
+// Top-level helpers: rgb <-> hsl so all analyzers can use them
+function rgbToHsl(r: number, g: number, b: number) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0,
+    s = 0,
+    l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h /= 6;
+  }
+  return [h, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number) {
+  let r: number, g: number, b: number;
+  if (s === 0) {
+    r = g = b = l; // achromatic
+  } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
 // Helper: analyze pixbuf and return primary/light/dark colors
-function analyzePixbuf(pixbuf: any) {
+// Original analyzer (k-means style). Keep as one implementation.
+function analyzePixbuf_kmeans(pixbuf: any) {
   // Use a simple k-means style quantization on sampled pixels to find dominant colors.
   // This is lightweight and doesn't require external libs. We then derive light/dark
   // variants by converting to HSL and adjusting lightness.
@@ -179,70 +242,6 @@ function analyzePixbuf(pixbuf: any) {
   const primaryRgb = chosen.rgb;
   const primaryHsl: [number, number, number] = [chosen.hsl[0], chosen.hsl[1], chosen.hsl[2]];
 
-  const rgbToHex = (r: number, g: number, b: number) =>
-    '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-
-  // Helpers: rgb <-> hsl
-  function rgbToHsl(r: number, g: number, b: number) {
-    r /= 255;
-    g /= 255;
-    b /= 255;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    let h = 0,
-      s = 0,
-      l = (max + min) / 2;
-    if (max !== min) {
-      const d = max - min;
-      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-      switch (max) {
-        case r:
-          h = (g - b) / d + (g < b ? 6 : 0);
-          break;
-        case g:
-          h = (b - r) / d + 2;
-          break;
-        case b:
-          h = (r - g) / d + 4;
-          break;
-      }
-      h /= 6;
-    }
-    return [h, s, l];
-  }
-
-  function hslToRgb(h: number, s: number, l: number) {
-    let r: number, g: number, b: number;
-    if (s === 0) {
-      r = g = b = l; // achromatic
-    } else {
-      const hue2rgb = (p: number, q: number, t: number) => {
-        if (t < 0) {
-          t += 1;
-        }
-        if (t > 1) {
-          t -= 1;
-        }
-        if (t < 1 / 6) {
-          return p + (q - p) * 6 * t;
-        }
-        if (t < 1 / 2) {
-          return q;
-        }
-        if (t < 2 / 3) {
-          return p + (q - p) * (2 / 3 - t) * 6;
-        }
-        return p;
-      };
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      r = hue2rgb(p, q, h + 1 / 3);
-      g = hue2rgb(p, q, h);
-      b = hue2rgb(p, q, h - 1 / 3);
-    }
-    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-  }
-
   const [ph, psOrig, pl] = primaryHsl || rgbToHsl(primaryRgb[0], primaryRgb[1], primaryRgb[2]);
   // if the chosen color is very desaturated, nudge its saturation up to produce
   // visually pleasing branding colors (preserve hue)
@@ -283,10 +282,384 @@ function analyzePixbuf(pixbuf: any) {
 
   // Return hex strings
   return {
-    primary: rgbToHex(primaryRgb[0], primaryRgb[1], primaryRgb[2]),
-    light: rgbToHex(lightRgb[0], lightRgb[1], lightRgb[2]),
-    dark: rgbToHex(darkRgb[0], darkRgb[1], darkRgb[2]),
+    primary: safeRgbToHex(primaryRgb[0], primaryRgb[1], primaryRgb[2]),
+    light: safeRgbToHex(lightRgb[0], lightRgb[1], lightRgb[2]),
+    dark: safeRgbToHex(darkRgb[0], darkRgb[1], darkRgb[2]),
   };
+}
+
+// Alternative analyzer: HSL shift around the average color
+function analyzePixbuf_hslShift(pixbuf: any) {
+  try {
+    const width = pixbuf.get_width();
+    const height = pixbuf.get_height();
+    const rowstride = pixbuf.get_rowstride();
+    const n_channels = pixbuf.get_n_channels();
+    const pixels = pixbuf.get_pixels();
+    let rsum = 0,
+      gsum = 0,
+      bsum = 0,
+      count = 0;
+    const hasAlpha = n_channels === 4;
+    const step = Math.max(1, Math.floor(Math.min(width, height) / 40));
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        try {
+          const idx = y * rowstride + x * n_channels;
+          if (hasAlpha) {
+            const a = pixels[idx + 3] & 0xff;
+            if (a < 10) continue;
+          }
+          const r = pixels[idx] & 0xff;
+          const g = pixels[idx + 1] & 0xff;
+          const b = pixels[idx + 2] & 0xff;
+          rsum += r;
+          gsum += g;
+          bsum += b;
+          count++;
+        } catch (e) {}
+      }
+    }
+    if (count === 0) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    const ar = Math.round(rsum / count);
+    const ag = Math.round(gsum / count);
+    const ab = Math.round(bsum / count);
+    // convert to HSL and produce variants by pushing lightness opposite directions
+    const rgbToHsl = (r: number, g: number, b: number) => {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      let h = 0,
+        s = 0,
+        l = (max + min) / 2;
+      if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r:
+            h = (g - b) / d + (g < b ? 6 : 0);
+            break;
+          case g:
+            h = (b - r) / d + 2;
+            break;
+          case b:
+            h = (r - g) / d + 4;
+            break;
+        }
+        h /= 6;
+      }
+      return [h, s, l];
+    };
+    const hslToRgb = (h: number, s: number, l: number) => {
+      let r: number, g: number, b: number;
+      if (s === 0) r = g = b = l;
+      else {
+        const hue2rgb = (p: number, q: number, t: number) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1 / 6) return p + (q - p) * 6 * t;
+          if (t < 1 / 2) return q;
+          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+          return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+      }
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+    const [h, s, l] = rgbToHsl(ar, ag, ab);
+    const clamp01 = (v: number) => Math.max(0.03, Math.min(0.97, v));
+    const primaryRgb = [ar, ag, ab];
+    const ps = Math.max(s, 0.1);
+    const light = hslToRgb(h, ps, clamp01(l + 0.25));
+    const dark = hslToRgb(h, ps, clamp01(l - 0.28));
+    return {
+      primary: safeRgbToHex(primaryRgb[0], primaryRgb[1], primaryRgb[2]),
+      light: safeRgbToHex(light[0], light[1], light[2]),
+      dark: safeRgbToHex(dark[0], dark[1], dark[2]),
+    };
+  } catch (e) {
+    return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  }
+}
+
+// Alternative analyzer: complementary-based (pick dominant color then use complementary hue)
+function analyzePixbuf_complementary(pixbuf: any) {
+  try {
+    // reuse kmeans to get a primary then compute complement
+    const width = pixbuf.get_width();
+    const height = pixbuf.get_height();
+    const rowstride = pixbuf.get_rowstride();
+    const n_channels = pixbuf.get_n_channels();
+    const pixels = pixbuf.get_pixels();
+    const samples: Array<[number, number, number]> = [];
+    const step = Math.max(1, Math.floor(Math.min(width, height) / 60));
+    const hasAlpha = n_channels === 4;
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        try {
+          const idx = y * rowstride + x * n_channels;
+          if (hasAlpha) {
+            const a = pixels[idx + 3] & 0xff;
+            if (a < 10) continue;
+          }
+          samples.push([pixels[idx] & 0xff, pixels[idx + 1] & 0xff, pixels[idx + 2] & 0xff]);
+        } catch (e) {}
+      }
+    }
+    if (samples.length === 0) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    // simple frequency pick: round colours to 32-step buckets and pick most frequent
+    const map: { [k: string]: number } = {};
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      const key = `${Math.round(s[0] / 32)}-${Math.round(s[1] / 32)}-${Math.round(s[2] / 32)}`;
+      map[key] = (map[key] || 0) + 1;
+    }
+    let bestKey: string | null = null;
+    let bestCount = 0;
+    Object.keys(map).forEach((k) => {
+      if (map[k] > bestCount) {
+        bestCount = map[k];
+        bestKey = k;
+      }
+    });
+    if (!bestKey) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    const parts = bestKey.split('-').map((p) => parseInt(p, 10) * 32);
+    const [r, g, b] = [parts[0], parts[1], parts[2]];
+    const rgbToHsl = (r: number, g: number, b: number) => {
+      r /= 255;
+      g /= 255;
+      b /= 255;
+      const max = Math.max(r, g, b),
+        min = Math.min(r, g, b);
+      let h = 0,
+        s = 0,
+        l = (max + min) / 2;
+      if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r:
+            h = (g - b) / d + (g < b ? 6 : 0);
+            break;
+          case g:
+            h = (b - r) / d + 2;
+            break;
+          case b:
+            h = (r - g) / d + 4;
+            break;
+        }
+        h /= 6;
+      }
+      return [h, s, l];
+    };
+    const hslToRgb = (h: number, s: number, l: number) => {
+      let r: number, g: number, b: number;
+      if (s === 0) r = g = b = l;
+      else {
+        const hue2rgb = (p: number, q: number, t: number) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1 / 6) return p + (q - p) * 6 * t;
+          if (t < 1 / 2) return q;
+          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+          return p;
+        };
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        r = hue2rgb(p, q, h + 1 / 3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1 / 3);
+      }
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+    const [hh, ss, ll] = rgbToHsl(r, g, b);
+    const complementH = (hh + 0.5) % 1.0;
+    const clamp01 = (v: number) => Math.max(0.03, Math.min(0.97, v));
+    const lightRgb = hslToRgb(hh, Math.max(ss, 0.12), clamp01(ll + 0.22));
+    const darkRgb = hslToRgb(complementH, Math.max(ss, 0.12), clamp01(ll - 0.26));
+    return {
+      primary: safeRgbToHex(r, g, b),
+      light: safeRgbToHex(lightRgb[0], lightRgb[1], lightRgb[2]),
+      dark: safeRgbToHex(darkRgb[0], darkRgb[1], darkRgb[2]),
+    };
+  } catch (e) {
+    return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  }
+}
+
+// Dispatcher: choose which analyzer to run based on currentAlgorithm
+function analyzePixbufDispatch(pixbuf: any) {
+  if (!pixbuf) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  try {
+    switch (currentAlgorithm) {
+      case 'hsl-shift':
+        return analyzePixbuf_hslShift(pixbuf);
+      case 'complementary':
+        return analyzePixbuf_complementary(pixbuf);
+      case 'contrast-max':
+        return analyzePixbuf_contrastMax(pixbuf);
+      case 'vivid':
+        return analyzePixbuf_vivid(pixbuf);
+      case 'average':
+        return analyzePixbuf_average(pixbuf);
+      case 'kmeans':
+      default:
+        return analyzePixbuf_kmeans(pixbuf);
+    }
+  } catch (e) {
+    return analyzePixbuf_kmeans(pixbuf);
+  }
+}
+
+// New analyzer: choose the color that maximizes contrast vs white or black
+function analyzePixbuf_contrastMax(pixbuf: any) {
+  try {
+    const width = pixbuf.get_width();
+    const height = pixbuf.get_height();
+    const rowstride = pixbuf.get_rowstride();
+    const n_channels = pixbuf.get_n_channels();
+    const pixels = pixbuf.get_pixels();
+    const hasAlpha = n_channels === 4;
+    const step = Math.max(1, Math.floor(Math.min(width, height) / 60));
+    let best: [number, number, number] | null = null;
+    let bestScore = -1;
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        try {
+          const idx = y * rowstride + x * n_channels;
+          if (hasAlpha) {
+            const a = pixels[idx + 3] & 0xff;
+            if (a < 10) continue;
+          }
+          const r = pixels[idx] & 0xff;
+          const g = pixels[idx + 1] & 0xff;
+          const b = pixels[idx + 2] & 0xff;
+          const L = relativeLuminanceRgb(r, g, b);
+          // contrast vs white = (1 + 0.05)/(L + 0.05); vs black = (L+0.05)/0.05
+          const contrastWhite = (1.0 + 0.05) / (L + 0.05);
+          const contrastBlack = (L + 0.05) / 0.05;
+          // prefer colors that have a strong contrast to either white or black
+          const score = Math.max(contrastWhite, contrastBlack);
+          if (score > bestScore) {
+            bestScore = score;
+            best = [r, g, b];
+          }
+        } catch (e) {}
+      }
+    }
+    if (!best) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    // produce light/dark variants preserving hue
+    const [h, s, l] = rgbToHsl(best[0], best[1], best[2]);
+    const clamp01 = (v: number) => Math.max(0.03, Math.min(0.97, v));
+    const light = hslToRgb(h, Math.max(s, 0.12), clamp01(l + 0.25));
+    const dark = hslToRgb(h, Math.max(s, 0.12), clamp01(l - 0.28));
+    return {
+      primary: safeRgbToHex(best[0], best[1], best[2]),
+      light: safeRgbToHex(light[0], light[1], light[2]),
+      dark: safeRgbToHex(dark[0], dark[1], dark[2]),
+    };
+  } catch (e) {
+    return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  }
+}
+
+// New analyzer: pick the most saturated sample
+function analyzePixbuf_vivid(pixbuf: any) {
+  try {
+    const width = pixbuf.get_width();
+    const height = pixbuf.get_height();
+    const rowstride = pixbuf.get_rowstride();
+    const n_channels = pixbuf.get_n_channels();
+    const pixels = pixbuf.get_pixels();
+    const hasAlpha = n_channels === 4;
+    const step = Math.max(1, Math.floor(Math.min(width, height) / 60));
+    let best: [number, number, number] | null = null;
+    let bestSat = -1;
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        try {
+          const idx = y * rowstride + x * n_channels;
+          if (hasAlpha) {
+            const a = pixels[idx + 3] & 0xff;
+            if (a < 10) continue;
+          }
+          const r = pixels[idx] & 0xff;
+          const g = pixels[idx + 1] & 0xff;
+          const b = pixels[idx + 2] & 0xff;
+          const [_h, s, _l] = rgbToHsl(r, g, b);
+          if (s > bestSat) {
+            bestSat = s;
+            best = [r, g, b];
+          }
+        } catch (e) {}
+      }
+    }
+    if (!best) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    const [h, s, l] = rgbToHsl(best[0], best[1], best[2]);
+    const clamp01 = (v: number) => Math.max(0.03, Math.min(0.97, v));
+    const light = hslToRgb(h, Math.max(s, 0.12), clamp01(l + 0.22));
+    const dark = hslToRgb(h, Math.max(s, 0.12), clamp01(l - 0.26));
+    return {
+      primary: safeRgbToHex(best[0], best[1], best[2]),
+      light: safeRgbToHex(light[0], light[1], light[2]),
+      dark: safeRgbToHex(dark[0], dark[1], dark[2]),
+    };
+  } catch (e) {
+    return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  }
+}
+
+// New analyzer: average representative color (fast)
+function analyzePixbuf_average(pixbuf: any) {
+  try {
+    const width = pixbuf.get_width();
+    const height = pixbuf.get_height();
+    const rowstride = pixbuf.get_rowstride();
+    const n_channels = pixbuf.get_n_channels();
+    const pixels = pixbuf.get_pixels();
+    const hasAlpha = n_channels === 4;
+    const step = Math.max(1, Math.floor(Math.min(width, height) / 40));
+    let rsum = 0,
+      gsum = 0,
+      bsum = 0,
+      count = 0;
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        try {
+          const idx = y * rowstride + x * n_channels;
+          if (hasAlpha) {
+            const a = pixels[idx + 3] & 0xff;
+            if (a < 10) continue;
+          }
+          rsum += pixels[idx] & 0xff;
+          gsum += pixels[idx + 1] & 0xff;
+          bsum += pixels[idx + 2] & 0xff;
+          count++;
+        } catch (e) {}
+      }
+    }
+    if (count === 0) return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+    const ar = Math.round(rsum / count);
+    const ag = Math.round(gsum / count);
+    const ab = Math.round(bsum / count);
+    const [h, s, l] = rgbToHsl(ar, ag, ab);
+    const clamp01 = (v: number) => Math.max(0.03, Math.min(0.97, v));
+    const light = hslToRgb(h, Math.max(s, 0.08), clamp01(l + 0.25));
+    const dark = hslToRgb(h, Math.max(s, 0.08), clamp01(l - 0.28));
+    return {
+      primary: safeRgbToHex(ar, ag, ab),
+      light: safeRgbToHex(light[0], light[1], light[2]),
+      dark: safeRgbToHex(dark[0], dark[1], dark[2]),
+    };
+  } catch (e) {
+    return { primary: '#888888', light: '#bbbbbb', dark: '#444444' };
+  }
 }
 
 // Preview widgets/providers (populated in createApp)
@@ -308,6 +681,9 @@ let previewFrameDark: any = null;
 // DrawingArea fallbacks (more control over painting & scaling)
 let drawingLight: any = null;
 let drawingDark: any = null;
+
+// Currently selected algorithm (can be switched via UI buttons)
+let currentAlgorithm: string = 'kmeans';
 
 // Fixed preview size (square) used throughout
 const PREVIEW_SIZE = 300;
@@ -960,7 +1336,7 @@ function handleFile(path: string, colorsBox: any, parentWindow?: any) {
     const isSvg = typeof path === 'string' && path.match(/\.svgz?$/i);
     const analysisSize = isSvg ? 512 : 256;
     const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, analysisSize, analysisSize, true);
-    const colors = analyzePixbuf(pixbuf);
+    const colors = analyzePixbufDispatch(pixbuf);
 
     const lightColor = colors.light;
     const darkColor = colors.dark;
@@ -968,8 +1344,10 @@ function handleFile(path: string, colorsBox: any, parentWindow?: any) {
 
     const lightLabel = new Gtk.Label({ label: `Light: ${lightColor}` });
     const darkLabel = new Gtk.Label({ label: `Dark: ${darkColor}` });
+    const algoUsedLabel = new Gtk.Label({ label: `Algorithm: ${currentAlgorithm}` });
     colorsBox.append(lightLabel);
     colorsBox.append(darkLabel);
+    colorsBox.append(algoUsedLabel);
 
     // Update previews background colors via CSS providers if available
     try {
@@ -1695,6 +2073,50 @@ function createApp() {
         } catch (e) {}
       }
 
+      // Algorithm selector buttons (allow quick switching between extraction algorithms)
+      const algoBox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 6 });
+      const algoLabel = new Gtk.Label({ label: 'Algorithm:' });
+      try {
+        algoBox.append(algoLabel);
+      } catch (e) {
+        try {
+          algoBox.add(algoLabel);
+        } catch (e) {}
+      }
+
+      const makeAlgoButton = (id: string, label: string) => {
+        const b = new Gtk.Button({ label });
+        try {
+          b.connect('clicked', () => {
+            try {
+              currentAlgorithm = id;
+              // if an image is already loaded, re-run handleFile to update previews/colors
+              if (currentImagePath && colorsBox) {
+                handleFile(currentImagePath, colorsBox, window);
+              }
+            } catch (e) {}
+          });
+        } catch (e) {}
+        return b;
+      };
+
+      try {
+        algoBox.append(makeAlgoButton('kmeans', 'K-Means'));
+        algoBox.append(makeAlgoButton('hsl-shift', 'HSL Shift'));
+        algoBox.append(makeAlgoButton('complementary', 'Complement'));
+        algoBox.append(makeAlgoButton('contrast-max', 'Contrast-max'));
+        algoBox.append(makeAlgoButton('vivid', 'Vivid'));
+        algoBox.append(makeAlgoButton('average', 'Average'));
+      } catch (e) {
+        try {
+          algoBox.add(makeAlgoButton('kmeans', 'K-Means'));
+          algoBox.add(makeAlgoButton('hsl-shift', 'HSL Shift'));
+          algoBox.add(makeAlgoButton('complementary', 'Complement'));
+        } catch (e) {}
+      }
+
+      // Do not append algoBox to controlBox; it will be placed on its own line below
+
       const colorsBox = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL,
         spacing: 8,
@@ -2184,6 +2606,13 @@ function createApp() {
       } catch (e) {}
 
       box.append(controlBox);
+      try {
+        box.append(algoBox);
+      } catch (e) {
+        try {
+          box.add(algoBox);
+        } catch (e) {}
+      }
       box.append(previewsBox);
       box.append(colorsBox);
 
