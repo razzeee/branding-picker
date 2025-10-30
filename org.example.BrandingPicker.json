@@ -1,0 +1,24 @@
+{
+  "app-id": "org.example.BrandingPicker",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.node24",
+    "org.freedesktop.Sdk.Extension.typescript"
+  ],
+  "command": "branding-picker",
+  "modules": [
+    {
+      "name": "branding-picker",
+      "buildsystem": "simple",
+      "build-commands": [
+        "npm install --no-audit --no-fund",
+        "npm run build",
+        "install -D dist/main.js $FLATPAK_DEST/bin/branding-picker",
+        "install -D branding-picker.desktop $FLATPAK_DEST/share/applications/branding-picker.desktop"
+      ],
+      "sources": []
+    }
+  ]
+}

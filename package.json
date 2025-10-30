@@ -1,0 +1,17 @@
+{
+    "name": "branding-picker",
+    "version": "0.1.0",
+    "description": "A small GJS/TypeScript app to pick AppStream branding colors from images",
+    "main": "dist/main.js",
+    "scripts": {
+        "build": "tsc",
+        "watch": "tsc -w",
+        "start": "gjs --gapplication=dist/main.js",
+        "lint": "echo 'no linter configured'",
+        "format": "prettier --write \"src/**/*.{ts,js,md}\""
+    },
+    "devDependencies": {
+        "prettier": "^2.8.0",
+        "typescript": "^5.0.0"
+    }
+}

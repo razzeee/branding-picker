@@ -1,0 +1,8 @@
+node_modules
+dist
+repo
+build-dir
+.git
+.gitignore
+package-lock.json
+*.flatpak

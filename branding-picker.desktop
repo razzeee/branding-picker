@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Branding Picker
+Exec=branding-picker
+Type=Application
+Categories=Utility;GNOME;
+StartupNotify=true
