@@ -690,6 +690,8 @@ const PREVIEW_SIZE = 300;
 
 // Keep track of temp files we downloaded so we can clean them up when a new image is loaded
 const tempFiles: string[] = [];
+// Keep track of fetched app metadata to display links
+let currentMetadata: any = null;
 
 // Helper: force a widget to request a square content area of `size` and avoid
 // expansion. Uses available APIs across GTK versions.
@@ -1604,6 +1606,165 @@ function createApp() {
         placeholder_text: 'Flathub URL or appId (e.g. org.gnome.Glade)',
       });
 
+      // Box for clickable links (homepage, contribution, manifest) from appstream metadata
+      const linksBox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 6 });
+      try {
+        linksBox.hide();
+      } catch (e) {
+        try {
+          linksBox.set_visible(false);
+        } catch (e) {}
+      }
+
+      // Helper: create a clickable link button that opens a URL
+      const createLinkButton = (label: string, url: string) => {
+        try {
+          const btn = new Gtk.Button({ label });
+          btn.connect('clicked', () => {
+            try {
+              // Use Gtk.show_uri to open URL in default browser
+              if (Gtk.show_uri) {
+                const win = btn.get_root ? btn.get_root() : window;
+                const timestamp = Gdk.CURRENT_TIME || 0;
+                Gtk.show_uri(win, url, timestamp);
+              } else {
+                // Fallback: try xdg-open via subprocess
+                try {
+                  const proc = new Gio.Subprocess({
+                    argv: ['xdg-open', url],
+                    flags: Gio.SubprocessFlags.NONE,
+                  });
+                  proc.init(null);
+                } catch (e) {}
+              }
+            } catch (e) {
+              log('Failed to open URL:', url, e);
+            }
+          });
+          return btn;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      // Helper: update linksBox with urls from metadata
+      const updateLinksFromMetadata = (meta: any) => {
+        try {
+          // Clear existing links
+          let child = linksBox.get_first_child ? linksBox.get_first_child() : null;
+          while (child) {
+            const next = child.get_next_sibling ? child.get_next_sibling() : null;
+            try {
+              linksBox.remove(child);
+            } catch (e) {}
+            child = next;
+          }
+
+          if (!meta || !meta.urls) {
+            // Hide linksBox if no urls
+            try {
+              linksBox.hide();
+            } catch (e) {
+              try {
+                linksBox.set_visible(false);
+              } catch (e) {}
+            }
+            return;
+          }
+
+          const urls = meta.urls;
+          let hasLinks = false;
+
+          // Add homepage link
+          if (urls.homepage) {
+            const btn = createLinkButton('Homepage', urls.homepage);
+            if (btn) {
+              try {
+                linksBox.append(btn);
+                hasLinks = true;
+              } catch (e) {
+                try {
+                  linksBox.add(btn);
+                  hasLinks = true;
+                } catch (e) {}
+              }
+            }
+          }
+
+          // Add bugtracker link
+          if (urls.bugtracker) {
+            const btn = createLinkButton('Bugtracker', urls.bugtracker);
+            if (btn) {
+              try {
+                linksBox.append(btn);
+                hasLinks = true;
+              } catch (e) {
+                try {
+                  linksBox.add(btn);
+                  hasLinks = true;
+                } catch (e) {}
+              }
+            }
+          }
+
+          // Add contribution link (vcs-browser)
+          if (urls['vcs-browser']) {
+            const btn = createLinkButton('Contribution', urls['vcs-browser']);
+            if (btn) {
+              try {
+                linksBox.append(btn);
+                hasLinks = true;
+              } catch (e) {
+                try {
+                  linksBox.add(btn);
+                  hasLinks = true;
+                } catch (e) {}
+              }
+            }
+          }
+
+          // Add manifest link - construct from metadata if available
+          // Typically the manifest would be at the vcs-browser location or derived from app_id
+          // For Flathub apps, manifest is usually at: https://github.com/flathub/{app_id}
+          if (meta.id) {
+            const manifestUrl = `https://github.com/flathub/${meta.id}`;
+            const btn = createLinkButton('Manifest', manifestUrl);
+            if (btn) {
+              try {
+                linksBox.append(btn);
+                hasLinks = true;
+              } catch (e) {
+                try {
+                  linksBox.add(btn);
+                  hasLinks = true;
+                } catch (e) {}
+              }
+            }
+          }
+
+          // Show linksBox if we added any links
+          if (hasLinks) {
+            try {
+              linksBox.show();
+            } catch (e) {
+              try {
+                linksBox.set_visible(true);
+              } catch (e) {}
+            }
+          } else {
+            try {
+              linksBox.hide();
+            } catch (e) {
+              try {
+                linksBox.set_visible(false);
+              } catch (e) {}
+            }
+          }
+        } catch (e) {
+          log('Failed to update links:', e);
+        }
+      };
+
       // Helper: extract appId from a Flathub URL or treat the input as an appId
       const extractAppIdFromInput = (input: string) => {
         try {
@@ -1881,6 +2042,10 @@ function createApp() {
               return;
             }
 
+            // Store metadata and update links
+            currentMetadata = meta;
+            updateLinksFromMetadata(meta);
+
             // find icon URL
             let iconUrl: string | null = null;
             try {
@@ -1981,6 +2146,9 @@ function createApp() {
               if (uris && uris.length > 0) {
                 const file = Gio.File.new_for_uri(uris[0]);
                 const path = file.get_path();
+                // Clear metadata and hide links when opening file directly
+                currentMetadata = null;
+                updateLinksFromMetadata(null);
                 handleFile(path, colorsBox, window);
               }
             } catch (e) {
@@ -2016,6 +2184,9 @@ function createApp() {
               if (response === Gtk.ResponseType.ACCEPT) {
                 const file = chooser.get_file();
                 const path = file.get_path();
+                // Clear metadata and hide links when opening file directly
+                currentMetadata = null;
+                updateLinksFromMetadata(null);
                 handleFile(path, colorsBox, window);
               }
             });
@@ -2046,6 +2217,9 @@ function createApp() {
             if (resp === Gtk.ResponseType.OK) {
               const file = dialog.get_file();
               const path = file.get_path();
+              // Clear metadata and hide links when opening file directly
+              currentMetadata = null;
+              updateLinksFromMetadata(null);
               handleFile(path, colorsBox, window);
             }
             dialog.destroy();
@@ -2606,6 +2780,13 @@ function createApp() {
       } catch (e) {}
 
       box.append(controlBox);
+      try {
+        box.append(linksBox);
+      } catch (e) {
+        try {
+          box.add(linksBox);
+        } catch (e) {}
+      }
       try {
         box.append(algoBox);
       } catch (e) {
