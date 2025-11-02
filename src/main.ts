@@ -1476,15 +1476,9 @@ function handleFile(path: string, colorsBox: any, parentWindow?: any) {
           const contrastWithWhite = contrastRatio(lightColor, '#ffffff').toFixed(2);
           const contrastWithBlack = contrastRatio(lightColor, '#000000').toFixed(2);
           const text = `${lightColor} (W:${contrastWithWhite}, B:${contrastWithBlack})`;
-          // Force the below-preview label for the light preview to white text as requested.
-          const fg = '#ffffff';
           try {
-            overlayLabelLight.set_markup(`<span foreground="${fg}">${escapeMarkup(text)}</span>`);
-          } catch (e) {
-            try {
-              overlayLabelLight.set_text(text);
-            } catch (e) {}
-          }
+            overlayLabelLight.set_text(text);
+          } catch (e) {}
         }
       } catch (e) {}
       try {
@@ -1492,16 +1486,9 @@ function handleFile(path: string, colorsBox: any, parentWindow?: any) {
           const contrastWithWhite = contrastRatio(darkColor, '#ffffff').toFixed(2);
           const contrastWithBlack = contrastRatio(darkColor, '#000000').toFixed(2);
           const text = `${darkColor} (W:${contrastWithWhite}, B:${contrastWithBlack})`;
-          // choose dark or light foreground for legibility (dark preview -> light text)
-          const cW = contrastRatio(darkColor, '#ffffff');
-          const fg = cW >= 3 ? '#ffffff' : '#000000';
           try {
-            overlayLabelDark.set_markup(`<span foreground="${fg}">${escapeMarkup(text)}</span>`);
-          } catch (e) {
-            try {
-              overlayLabelDark.set_text(text);
-            } catch (e) {}
-          }
+            overlayLabelDark.set_text(text);
+          } catch (e) {}
         }
       } catch (e) {}
     } catch (e) {}
